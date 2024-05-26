@@ -1,10 +1,10 @@
+from unittest.mock import patch
+
 import pytest
 from llama_cpp import Llama
 
 from semantic_router.llms.llamacpp import LlamaCppLLM
 from semantic_router.schema import Message
-
-from unittest.mock import patch
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ class TestLlamaCppLLM:
         test_query = "What time is it in America/New_York?"
 
         llamacpp_llm.extract_function_inputs(
-            query=test_query, function_schema=test_schema
+            query=test_query, function_schemas=[test_schema]
         )
 
     def test_llamacpp_extract_function_inputs_invalid(self, llamacpp_llm, mocker):
@@ -82,5 +82,5 @@ class TestLlamaCppLLM:
             test_query = "What time is it in America/New_York?"
 
             llamacpp_llm.extract_function_inputs(
-                query=test_query, function_schema=test_schema
+                query=test_query, function_schemas=[test_schema]
             )

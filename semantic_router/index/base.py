@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union, Dict
 
 import numpy as np
 from pydantic.v1 import BaseModel
@@ -20,7 +20,7 @@ class BaseIndex(BaseModel):
     type: str = "base"
 
     def add(
-        self, embeddings: List[List[float]], routes: List[str], utterances: List[str]
+        self, embeddings: List[List[float]], routes: List[str], utterances: List[Any]
     ):
         """
         Add embeddings to the index.
@@ -35,7 +35,7 @@ class BaseIndex(BaseModel):
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
-    def describe(self) -> dict:
+    def describe(self) -> Dict:
         """
         Returns a dictionary with index details such as type, dimensions, and total
         vector count.

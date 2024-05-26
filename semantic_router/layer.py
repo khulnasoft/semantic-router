@@ -5,15 +5,15 @@ import random
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-import yaml
+import yaml  # type: ignore
 from tqdm.auto import tqdm
 
-from semantic_router.encoders import BaseEncoder, OpenAIEncoder
+from semantic_router.encoders import AutoEncoder, BaseEncoder, OpenAIEncoder
 from semantic_router.index.base import BaseIndex
 from semantic_router.index.local import LocalIndex
 from semantic_router.llms import BaseLLM, OpenAILLM
 from semantic_router.route import Route
-from semantic_router.schema import Encoder, EncoderType, RouteChoice
+from semantic_router.schema import EncoderType, RouteChoice
 from semantic_router.utils.defaults import EncoderDefault
 from semantic_router.utils.logger import logger
 
@@ -196,7 +196,7 @@ class RouteLayer:
         else:
             self.encoder = encoder
         self.llm = llm
-        self.routes: list[Route] = routes if routes is not None else []
+        self.routes: List[Route] = routes if routes is not None else []
         self.score_threshold = self.encoder.score_threshold
         self.top_k = top_k
         if self.top_k < 1:
@@ -242,13 +242,12 @@ class RouteLayer:
 
         route, top_class_scores = self._retrieve_top_route(vector, route_filter)
         passed = self._check_threshold(top_class_scores, route)
-
         if passed and route is not None and not simulate_static:
-            if route.function_schema and text is None:
+            if route.function_schemas and text is None:
                 raise ValueError(
                     "Route has a function schema, but no text was provided."
                 )
-            if route.function_schema and not isinstance(route.llm, BaseLLM):
+            if route.function_schemas and not isinstance(route.llm, BaseLLM):
                 if not self.llm:
                     logger.warning(
                         "No LLM provided for dynamic route, will use OpenAI LLM "
@@ -270,6 +269,32 @@ class RouteLayer:
         else:
             # if no route passes threshold, return empty route choice
             return RouteChoice()
+
+    def retrieve_multiple_routes(
+        self,
+        text: Optional[str] = None,
+        vector: Optional[List[float]] = None,
+    ) -> List[RouteChoice]:
+        if vector is None:
+            if text is None:
+                raise ValueError("Either text or vector must be provided")
+            vector_arr = self._encode(text=text)
+        else:
+            vector_arr = np.array(vector)
+        # get relevant utterances
+        results = self._retrieve(xq=vector_arr)
+
+        # decide most relevant routes
+        categories_with_scores = self._semantic_classify_multiple_routes(results)
+
+        route_choices = []
+        for category, score in categories_with_scores:
+            route = self.check_for_matching_routes(category)
+            if route:
+                route_choice = RouteChoice(name=route.name, similarity_score=score)
+                route_choices.append(route_choice)
+
+        return route_choices
 
     def _retrieve_top_route(
         self, vector: List[float], route_filter: Optional[List[str]] = None
@@ -311,18 +336,18 @@ class RouteLayer:
     @classmethod
     def from_json(cls, file_path: str):
         config = LayerConfig.from_file(file_path)
-        encoder = Encoder(type=config.encoder_type, name=config.encoder_name).model
+        encoder = AutoEncoder(type=config.encoder_type, name=config.encoder_name).model
         return cls(encoder=encoder, routes=config.routes)
 
     @classmethod
     def from_yaml(cls, file_path: str):
         config = LayerConfig.from_file(file_path)
-        encoder = Encoder(type=config.encoder_type, name=config.encoder_name).model
+        encoder = AutoEncoder(type=config.encoder_type, name=config.encoder_name).model
         return cls(encoder=encoder, routes=config.routes)
 
     @classmethod
     def from_config(cls, config: LayerConfig, index: Optional[BaseIndex] = None):
-        encoder = Encoder(type=config.encoder_type, name=config.encoder_name).model
+        encoder = AutoEncoder(type=config.encoder_type, name=config.encoder_name).model
         return cls(encoder=encoder, routes=config.routes, index=index)
 
     def add(self, route: Route):
@@ -402,7 +427,7 @@ class RouteLayer:
 
     def _retrieve(
         self, xq: Any, top_k: int = 5, route_filter: Optional[List[str]] = None
-    ) -> List[dict]:
+    ) -> List[Dict]:
         """Given a query vector, retrieve the top_k most similar records."""
         # get scores and routes
         scores, routes = self.index.query(
@@ -422,15 +447,8 @@ class RouteLayer:
                 f"Unsupported aggregation method chosen: {aggregation}. Choose either 'SUM', 'MEAN', or 'MAX'."
             )
 
-    def _semantic_classify(self, query_results: List[dict]) -> Tuple[str, List[float]]:
-        scores_by_class: Dict[str, List[float]] = {}
-        for result in query_results:
-            score = result["score"]
-            route = result["route"]
-            if route in scores_by_class:
-                scores_by_class[route].append(score)
-            else:
-                scores_by_class[route] = [score]
+    def _semantic_classify(self, query_results: List[Dict]) -> Tuple[str, List[float]]:
+        scores_by_class = self.group_scores_by_class(query_results)
 
         # Calculate total score for each class
         total_scores = {
@@ -445,6 +463,49 @@ class RouteLayer:
         else:
             logger.warning("No classification found for semantic classifier.")
             return "", []
+
+    def get(self, name: str) -> Optional[Route]:
+        for route in self.routes:
+            if route.name == name:
+                return route
+        logger.error(f"Route `{name}` not found")
+        return None
+
+    def _semantic_classify_multiple_routes(
+        self, query_results: List[Dict]
+    ) -> List[Tuple[str, float]]:
+        scores_by_class = self.group_scores_by_class(query_results)
+
+        # Filter classes based on threshold and find max score for each
+        classes_above_threshold = []
+        for route_name, scores in scores_by_class.items():
+            # Use the get method to find the Route object by its name
+            route_obj = self.get(route_name)
+            if route_obj is not None:
+                # Use the Route object's threshold if it exists, otherwise use the provided threshold
+                _threshold = (
+                    route_obj.score_threshold
+                    if route_obj.score_threshold is not None
+                    else self.score_threshold
+                )
+                if self._pass_threshold(scores, _threshold):
+                    max_score = max(scores)
+                    classes_above_threshold.append((route_name, max_score))
+
+        return classes_above_threshold
+
+    def group_scores_by_class(
+        self, query_results: List[Dict]
+    ) -> Dict[str, List[float]]:
+        scores_by_class: Dict[str, List[float]] = {}
+        for result in query_results:
+            score = result["score"]
+            route = result["route"]
+            if route in scores_by_class:
+                scores_by_class[route].append(score)
+            else:
+                scores_by_class[route] = [score]
+        return scores_by_class
 
     def _pass_threshold(self, scores: List[float], threshold: float) -> bool:
         if scores:

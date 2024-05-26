@@ -38,6 +38,7 @@ class PineconeRecord(BaseModel):
 
 class PineconeIndex(BaseIndex):
     index_prefix: str = "semantic-router--"
+    api_key: Optional[str] = None
     index_name: str = "index"
     dimensions: Union[int, None] = None
     metric: str = "cosine"
@@ -47,12 +48,34 @@ class PineconeIndex(BaseIndex):
     client: Any = Field(default=None, exclude=True)
     index: Optional[Any] = Field(default=None, exclude=True)
     ServerlessSpec: Any = Field(default=None, exclude=True)
+    namespace: Optional[str] = ""
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        self._initialize_client()
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        index_name: str = "index",
+        dimensions: Optional[int] = None,
+        metric: str = "cosine",
+        cloud: str = "aws",
+        region: str = "us-west-2",
+        host: str = "",
+        namespace: Optional[str] = "",
+    ):
+        super().__init__()
+        self.index_name = index_name
+        self.dimensions = dimensions
+        self.metric = metric
+        self.cloud = cloud
+        self.region = region
+        self.host = host
+        self.namespace = namespace
         self.type = "pinecone"
-        self.client = self._initialize_client()
+        self.api_key = api_key or os.getenv("PINECONE_API_KEY")
+
+        if self.api_key is None:
+            raise ValueError("Pinecone API key is required.")
+
+        self.client = self._initialize_client(api_key=self.api_key)
 
     def _initialize_client(self, api_key: Optional[str] = None):
         try:
@@ -65,12 +88,25 @@ class PineconeIndex(BaseIndex):
                 "You can install it with: "
                 "`pip install 'semantic-router[pinecone]'`"
             )
-        api_key = api_key or os.getenv("PINECONE_API_KEY")
-        if api_key is None:
-            raise ValueError("Pinecone API key is required.")
-        return Pinecone(api_key=api_key)
+        pinecone_args = {"api_key": api_key, "source_tag": "semantic-router"}
+        if self.namespace:
+            pinecone_args["namespace"] = self.namespace
+
+        return Pinecone(**pinecone_args)
 
     def _init_index(self, force_create: bool = False) -> Union[Any, None]:
+        """Initializing the index can be done after the object has been created
+        to allow for the user to set the dimensions and other parameters.
+
+        If the index doesn't exist and the dimensions are given, the index will
+        be created. If the index exists, it will be returned. If the index doesn't
+        exist and the dimensions are not given, the index will not be created and
+        None will be returned.
+
+        :param force_create: If True, the index will be created even if the
+            dimensions are not given (which will raise an error).
+        :type force_create: bool, optional
+        """
         index_exists = self.index_name in self.client.list_indexes().names()
         dimensions_given = self.dimensions is not None
         if dimensions_given and not index_exists:
@@ -105,10 +141,10 @@ class PineconeIndex(BaseIndex):
             self.host = self.client.describe_index(self.index_name)["host"]
         return index
 
-    def _batch_upsert(self, batch: List[dict]):
+    def _batch_upsert(self, batch: List[Dict]):
         """Helper method for upserting a single batch of records."""
         if self.index is not None:
-            self.index.upsert(vectors=batch)
+            self.index.upsert(vectors=batch, namespace=self.namespace)
         else:
             raise ValueError("Index is None, could not upsert.")
 
@@ -155,7 +191,9 @@ class PineconeIndex(BaseIndex):
         # Construct the request URL for listing vectors. Adjust parameters as needed.
         list_url = f"https://{self.host}/vectors/list{prefix_str}"
         params: Dict = {}
-        headers = {"Api-Key": os.environ["PINECONE_API_KEY"]}
+        if self.namespace:
+            params["namespace"] = self.namespace
+        headers = {"Api-Key": self.api_key}
         metadata = []
 
         while True:
@@ -175,7 +213,7 @@ class PineconeIndex(BaseIndex):
 
             # if we need metadata, we fetch it
             if include_metadata:
-                res_meta = self.index.fetch(ids=vector_ids)
+                res_meta = self.index.fetch(ids=vector_ids, namespace=self.namespace)
                 # extract metadata only
                 metadata.extend([x["metadata"] for x in res_meta["vectors"].values()])
 
@@ -201,14 +239,14 @@ class PineconeIndex(BaseIndex):
     def delete(self, route_name: str):
         route_vec_ids = self._get_route_ids(route_name=route_name)
         if self.index is not None:
-            self.index.delete(ids=route_vec_ids)
+            self.index.delete(ids=route_vec_ids, namespace=self.namespace)
         else:
             raise ValueError("Index is None, could not delete.")
 
     def delete_all(self):
-        self.index.delete(delete_all=True)
+        self.index.delete(delete_all=True, namespace=self.namespace)
 
-    def describe(self) -> dict:
+    def describe(self) -> Dict:
         if self.index is not None:
             stats = self.index.describe_index_stats()
             return {
@@ -237,6 +275,7 @@ class PineconeIndex(BaseIndex):
             top_k=top_k,
             filter=filter_query,
             include_metadata=True,
+            namespace=self.namespace,
         )
         scores = [result["score"] for result in results["matches"]]
         route_names = [result["metadata"]["sr_route"] for result in results["matches"]]

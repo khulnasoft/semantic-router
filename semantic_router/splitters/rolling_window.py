@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List
+from warnings import warn
 
 import numpy as np
 
@@ -49,6 +50,13 @@ class RollingWindowSplitter(BaseSplitter):
         plot_splits=False,
         enable_statistics=False,
     ):
+        warn(
+            "Splitters are being deprecated. They have moved to their own "
+            "package. Please migrate to the `semantic-chunkers` package. More "
+            "information can be found at:\n"
+            "https://github.com/aurelio-labs/semantic-chunkers",
+            stacklevel=2,
+        )
         super().__init__(name=name, encoder=encoder)
         self.calculated_threshold: float
         self.encoder = encoder
@@ -76,7 +84,7 @@ class RollingWindowSplitter(BaseSplitter):
         if len(docs) == 1:
             token_count = tiktoken_length(docs[0])
             if token_count > self.max_split_tokens:
-                logger.warning(
+                logger.info(
                     f"Single document exceeds the maximum token limit "
                     f"of {self.max_split_tokens}. "
                     "Splitting to sentences before semantically splitting."
@@ -100,12 +108,27 @@ class RollingWindowSplitter(BaseSplitter):
         return splits
 
     def _encode_documents(self, docs: List[str]) -> np.ndarray:
-        try:
-            embeddings = self.encoder(docs)
-            return np.array(embeddings)
-        except Exception as e:
-            logger.error(f"Error encoding documents {docs}: {e}")
-            raise
+        """
+        Encodes a list of documents into embeddings. If the number of documents exceeds 2000,
+        the documents are split into batches to avoid overloading the encoder. OpenAI has a
+        limit of len(array) < 2048.
+
+        :param docs: List of text documents to be encoded.
+        :return: A numpy array of embeddings for the given documents.
+        """
+        max_docs_per_batch = 2000
+        embeddings = []
+
+        for i in range(0, len(docs), max_docs_per_batch):
+            batch_docs = docs[i : i + max_docs_per_batch]
+            try:
+                batch_embeddings = self.encoder(batch_docs)
+                embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.error(f"Error encoding documents {batch_docs}: {e}")
+                raise
+
+        return np.array(embeddings)
 
     def _calculate_similarity_scores(self, encoded_docs: np.ndarray) -> List[float]:
         raw_similarities = []
@@ -215,7 +238,11 @@ class RollingWindowSplitter(BaseSplitter):
             logger.debug(f"Document token count: {doc_token_count} tokens")
             # Check if current index is a split point based on similarity
             if doc_idx + 1 in split_indices:
-                if current_tokens_count + doc_token_count >= self.min_split_tokens:
+                if (
+                    self.min_split_tokens
+                    <= current_tokens_count + doc_token_count
+                    < self.max_split_tokens
+                ):
                     # Include the current document before splitting
                     # if it doesn't exceed the max limit
                     current_split.append(doc)
@@ -321,7 +348,7 @@ class RollingWindowSplitter(BaseSplitter):
         self,
         similarities: List[float],
         split_indices: List[int],
-        splits: list[DocumentSplit],
+        splits: List[DocumentSplit],
     ):
         try:
             from matplotlib import pyplot as plt

@@ -1,12 +1,12 @@
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, List, Dict
+
+from pydantic.v1 import PrivateAttr
 
 from semantic_router.llms.base import BaseLLM
 from semantic_router.schema import Message
 from semantic_router.utils.logger import logger
-
-from pydantic.v1 import PrivateAttr
 
 
 class LlamaCppLLM(BaseLLM):
@@ -48,7 +48,7 @@ class LlamaCppLLM(BaseLLM):
 
     def __call__(
         self,
-        messages: list[Message],
+        messages: List[Message],
     ) -> str:
         try:
             completion = self.llm.create_chat_completion(
@@ -79,9 +79,9 @@ class LlamaCppLLM(BaseLLM):
             self.grammar = None
 
     def extract_function_inputs(
-        self, query: str, function_schema: dict[str, Any]
-    ) -> dict:
+        self, query: str, function_schemas: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         with self._grammar():
             return super().extract_function_inputs(
-                query=query, function_schema=function_schema
+                query=query, function_schemas=function_schemas
             )
